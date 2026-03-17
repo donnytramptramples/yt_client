@@ -3,50 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Client - KDE Breeze</title>
-    <meta name="description" content="High-performance YouTube client with KDE Plasma Breeze theme">
-    <meta name="keywords" content="youtube, video player, downloader, breeze, kde">
-    <meta property="og:title" content="YouTube Client - KDE Breeze">
-    <meta property="og:description" content="High-performance YouTube client with KDE Plasma Breeze theme">
-    <meta name="twitter:title" content="YouTube Client - KDE Breeze">
-    <meta name="twitter:description" content="High-performance YouTube client with KDE Plasma Breeze theme">
+    <title>KDE Stealth Client</title>
     
-    <link href="https://resource.trickle.so/vendor_lib/unpkg/lucide-static@0.516.0/font/lucide.css" rel="stylesheet">
+    <!-- Breeze-style Icons -->
+    <link href="https://resource.trickle.so" rel="stylesheet">
     
-    <style type="text/tailwindcss">
-    @layer theme {
-        :root {
-            --bg-primary: #eff0f1;
-            --bg-secondary: #fcfcfc;
-            --text-primary: #232629;
-            --text-secondary: #7f8c8d;
-            --accent: #3daee9;
-            --border: #babdbf;
-        }
-        
-        :root.dark {
-            --bg-primary: #232629;
-            --bg-secondary: #2a2e32;
-            --text-primary: #eff0f1;
-            --text-secondary: #bdc3c7;
-            --accent: #3daee9;
-            --border: #4d4d4d;
-        }
-    }
-
-    @layer base {
-        body {
-            @apply bg-[var(--bg-primary)] text-[var(--text-primary)];
-        }
-        
-        * {
-            @apply border-[var(--border)];
-        }
-    }
-    </style>
+    <!-- We remove the <script src="cdn.tailwindcss.com"> and <style> block 
+         because Vite handles the CSS via your src/index.css file. -->
 </head>
-<body>
+<body class="antialiased">
     <div id="root"></div>
+    <!-- Vite/React Entry Point -->
     <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

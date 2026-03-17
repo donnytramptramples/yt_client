@@ -1,18 +1,24 @@
+# Use Node.js 20
 FROM node:20
 
-RUN apt-get update && apt-get install -y python3 python3-pip ffmpeg curl
+# Install Python and FFmpeg (Crucial for yt-dlp and audio)
+RUN apt-get update && apt-get install -y python3 ffmpeg curl
 
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+# Install the latest yt-dlp nightly to bypass 403 blocks
+RUN curl -L https://github.com -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp
 
+# Set the working directory
 WORKDIR /app
 
-COPY package*.json ./
+# Copy all your uploaded files (including components, src, etc.)
+COPY . .
+
+# Install your Node.js dependencies
 RUN npm install
 
-COPY . .
-RUN npm run build
+# Hugging Face MUST use port 7860
+ENV PORT=7860
+EXPOSE 7860
 
-EXPOSE 10000
-
+# Start your app (Using server.js as the main file)
 CMD ["node", "server.js"]

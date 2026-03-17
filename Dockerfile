@@ -1,10 +1,10 @@
 # Use the official Node image
 FROM node:20
 
-# 1. Install system dependencies (Python is required for yt-dlp, FFmpeg for merging video/audio)
+# 1. Install system dependencies (Python and FFmpeg are required)
 RUN apt-get update && apt-get install -y python3 python3-pip ffmpeg curl
 
-# 2. FIX: Correct URL to download the actual yt-dlp binary (pointing to the latest release)
+# 2. FIX: Correct URL to download the ACTUAL yt-dlp binary (not the homepage)
 RUN curl -L https://github.com -o /usr/local/bin/yt-dlp
 RUN chmod a+rx /usr/local/bin/yt-dlp
 

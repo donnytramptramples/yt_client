@@ -1,18 +1,26 @@
+# Use the official Node image
 FROM node:20
 
-# Install Python and FFmpeg
+# 1. Install system dependencies (Python is required for yt-dlp, FFmpeg for merging video/audio)
 RUN apt-get update && apt-get install -y python3 python3-pip ffmpeg curl
 
-# FIX: Correct URL to download the actual yt-dlp binary
+# 2. FIX: Correct URL to download the actual yt-dlp binary (pointing to the latest release)
 RUN curl -L https://github.com -o /usr/local/bin/yt-dlp
 RUN chmod a+rx /usr/local/bin/yt-dlp
 
+# 3. Set up the application directory
 WORKDIR /app
+
+# 4. Install npm dependencies
 COPY package*.json ./
 RUN npm install
+
+# 5. Copy source code and build the frontend (Vite)
 COPY . .
 RUN npm run build
 
-# Render uses 10000 by default; we will update server.js to match
+# 6. Expose the port Render expects (10000)
 EXPOSE 10000
+
+# 7. Start the server
 CMD ["node", "server.js"]

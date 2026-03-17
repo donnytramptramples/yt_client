@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-// FIX: Render uses 10000 by default
+// Render uses 10000; ensure this is set correctly
 const PORT = process.env.PORT || 10000;
 
 app.use(cors());
@@ -17,9 +17,10 @@ app.use(express.static(path.join(__dirname, 'dist')));
 
 let youtube;
 
+// Background Initialization
 async function initYouTube() {
   try {
-    // FIX: retrieve_player: true + specific location settings help bypass signature errors
+    // FIX: retrieve_player is CRITICAL for the "Signature Decipher" error
     youtube = await Innertube.create({
       cache: new UniversalCache(false),
       generate_session_locally: true,
@@ -36,8 +37,9 @@ initYouTube();
 // Search endpoint
 app.get('/api/search', async (req, res) => {
   try {
+    if (!youtube) return res.status(503).json({ error: "API Initialising..." });
     const { q } = req.query;
-    // FIX: type: 'video' avoids the ThumbnailView/Shorts parser crash
+    // type: 'video' avoids the ThumbnailView parser crash
     const results = await youtube.search(q, { type: 'video' });
     
     const videos = (results.videos || []).map(v => ({
@@ -51,7 +53,6 @@ app.get('/api/search', async (req, res) => {
     }));
     res.json({ videos });
   } catch (error) {
-    console.error("Search Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -63,7 +64,7 @@ app.get('/api/stream/:videoId', (req, res) => {
   
   const args = [
     '--no-check-certificate',
-    // FIX: Using multiple clients to ensure bypass if one is throttled
+    // ios client bypasses the browser cipher block
     '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     '-f', audioOnly === 'true' ? 'bestaudio/best' : `bestvideo[height<=${quality}]+bestaudio/best`,
@@ -72,18 +73,14 @@ app.get('/api/stream/:videoId', (req, res) => {
   ];
   
   const ytdlp = spawn('yt-dlp', args);
-  
   res.setHeader('Content-Type', audioOnly === 'true' ? 'audio/mpeg' : 'video/mp4');
   
   ytdlp.stdout.pipe(res);
   
-  // Catch spawn errors
   ytdlp.on('error', (err) => {
     console.error("Failed to start yt-dlp:", err.message);
     if (!res.headersSent) res.status(500).send("Streaming tool error.");
   });
-
-  ytdlp.stderr.on('data', (data) => console.error(`[yt-dlp] ${data.toString()}`));
 
   req.on('close', () => ytdlp.kill());
 });
@@ -92,7 +89,6 @@ app.get('/api/stream/:videoId', (req, res) => {
 app.get('/api/download/:videoId', (req, res) => {
   const { videoId } = req.params;
   const { format = 'mp4', quality = '720' } = req.query;
-  
   const formatMap = { mp4: 'mp4', mp3: 'mp3', flac: 'flac', opus: 'opus', ogg: 'ogg' };
   const ext = formatMap[format] || 'mp3';
 
@@ -110,10 +106,8 @@ app.get('/api/download/:videoId', (req, res) => {
   }
   
   const ytdlp = spawn('yt-dlp', args);
-  
   res.setHeader('Content-Disposition', `attachment; filename="download_${videoId}.${ext}"`);
   ytdlp.stdout.pipe(res);
-  
   req.on('close', () => ytdlp.kill());
 });
 
@@ -128,4 +122,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 const wss = new WebSocketServer({ server });
 wss.on('connection', (ws) => {
   console.log('WebSocket client connected');
+  ws.on('message', (message) => {
+    // Restored your manual progress message logic
+    ws.send(JSON.stringify({ progress: 100 }));
+  });
 });

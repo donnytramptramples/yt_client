@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 // Render uses 10000; ensure this is set correctly
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -57,58 +57,143 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
-// Stream endpoint
-app.get('/api/stream/:videoId', (req, res) => {
+// Stream endpoint - uses yt-dlp to get URLs, ffmpeg to mux into streamable fragmented MP4
+app.get('/api/stream/:videoId', async (req, res) => {
   const { videoId } = req.params;
   const { quality = '720', audioOnly = 'false' } = req.query;
-  
-  const args = [
+
+  const ytFormat = audioOnly === 'true'
+    ? 'bestaudio[ext=m4a]/bestaudio'
+    : `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]`;
+
+  const getUrlArgs = [
     '--no-check-certificate',
-    // ios client bypasses the browser cipher block
     '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    '-f', audioOnly === 'true' ? 'bestaudio/best' : `bestvideo[height<=${quality}]+bestaudio/best`,
-    '-o', '-',
+    '-g',
+    '-f', ytFormat,
     `https://www.youtube.com/watch?v=${videoId}`
   ];
-  
-  const ytdlp = spawn('yt-dlp', args);
-  res.setHeader('Content-Type', audioOnly === 'true' ? 'audio/mpeg' : 'video/mp4');
-  
-  ytdlp.stdout.pipe(res);
-  
-  ytdlp.on('error', (err) => {
-    console.error("Failed to start yt-dlp:", err.message);
-    if (!res.headersSent) res.status(500).send("Streaming tool error.");
-  });
 
-  req.on('close', () => ytdlp.kill());
+  try {
+    const urlProcess = spawn('yt-dlp', getUrlArgs);
+    let urlOutput = '';
+    let errOutput = '';
+    urlProcess.stdout.on('data', (d) => { urlOutput += d.toString(); });
+    urlProcess.stderr.on('data', (d) => { errOutput += d.toString(); });
+
+    await new Promise((resolve, reject) => {
+      urlProcess.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(errOutput.trim() || 'yt-dlp URL extraction failed'));
+      });
+    });
+
+    const urls = urlOutput.trim().split('\n').filter(Boolean);
+    if (!urls.length) throw new Error('No stream URLs found');
+
+    const videoUrl = urls[0];
+    const audioUrl = urls[1] || null;
+
+    const ffmpegArgs = [];
+
+    if (audioOnly === 'true') {
+      ffmpegArgs.push('-i', videoUrl, '-c:a', 'aac', '-b:a', '192k', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1');
+      res.setHeader('Content-Type', 'audio/mp4');
+    } else if (audioUrl) {
+      ffmpegArgs.push('-i', videoUrl, '-i', audioUrl, '-c:v', 'copy', '-c:a', 'aac', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1');
+      res.setHeader('Content-Type', 'video/mp4');
+    } else {
+      ffmpegArgs.push('-i', videoUrl, '-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1');
+      res.setHeader('Content-Type', 'video/mp4');
+    }
+
+    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+    ffmpeg.stdout.pipe(res);
+    ffmpeg.stderr.on('data', () => {}); // suppress ffmpeg logs
+
+    ffmpeg.on('error', (err) => {
+      console.error('ffmpeg error:', err.message);
+      if (!res.headersSent) res.status(500).send('Streaming error');
+    });
+
+    req.on('close', () => { try { ffmpeg.kill(); } catch (_) {} });
+
+  } catch (error) {
+    console.error('Stream error:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
 });
 
-// Download endpoint
-app.get('/api/download/:videoId', (req, res) => {
+// Download endpoint - uses yt-dlp for URL extraction, ffmpeg for muxing/conversion
+app.get('/api/download/:videoId', async (req, res) => {
   const { videoId } = req.params;
   const { format = 'mp4', quality = '720' } = req.query;
   const formatMap = { mp4: 'mp4', mp3: 'mp3', flac: 'flac', opus: 'opus', ogg: 'ogg' };
-  const ext = formatMap[format] || 'mp3';
+  const ext = formatMap[format] || 'mp4';
+  const isAudio = format !== 'mp4';
 
-  const args = [
+  const ytFormat = isAudio
+    ? 'bestaudio[ext=m4a]/bestaudio'
+    : `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]`;
+
+  const getUrlArgs = [
     '--no-check-certificate',
     '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    '-f', format === 'mp4' ? `bestvideo[height<=${quality}]+bestaudio/best` : 'bestaudio/best',
-    '-o', '-',
+    '-g', '-f', ytFormat,
     `https://www.youtube.com/watch?v=${videoId}`
   ];
 
-  if (format !== 'mp4') {
-    args.push('--extract-audio', '--audio-format', ext, '--audio-quality', '0');
+  try {
+    const urlProcess = spawn('yt-dlp', getUrlArgs);
+    let urlOutput = '';
+    let errOutput = '';
+    urlProcess.stdout.on('data', (d) => { urlOutput += d.toString(); });
+    urlProcess.stderr.on('data', (d) => { errOutput += d.toString(); });
+
+    await new Promise((resolve, reject) => {
+      urlProcess.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(errOutput.trim() || 'yt-dlp failed'));
+      });
+    });
+
+    const urls = urlOutput.trim().split('\n').filter(Boolean);
+    if (!urls.length) throw new Error('No URLs found');
+
+    const videoUrl = urls[0];
+    const audioUrl = urls[1] || null;
+
+    res.setHeader('Content-Disposition', `attachment; filename="download_${videoId}.${ext}"`);
+
+    let ffmpegArgs;
+    if (isAudio) {
+      const codecMap = { mp3: 'libmp3lame', flac: 'flac', opus: 'libopus', ogg: 'libvorbis' };
+      const ffFormat = { mp3: 'mp3', flac: 'flac', opus: 'opus', ogg: 'ogg' };
+      ffmpegArgs = ['-i', videoUrl, '-vn', '-c:a', codecMap[format] || 'libmp3lame', '-q:a', '0', '-f', ffFormat[format] || 'mp3', 'pipe:1'];
+      res.setHeader('Content-Type', `audio/${format}`);
+    } else if (audioUrl) {
+      ffmpegArgs = ['-i', videoUrl, '-i', audioUrl, '-c:v', 'copy', '-c:a', 'aac', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'];
+      res.setHeader('Content-Type', 'video/mp4');
+    } else {
+      ffmpegArgs = ['-i', videoUrl, '-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'];
+      res.setHeader('Content-Type', 'video/mp4');
+    }
+
+    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+    ffmpeg.stdout.pipe(res);
+    ffmpeg.stderr.on('data', () => {});
+    ffmpeg.on('error', (err) => {
+      console.error('ffmpeg download error:', err.message);
+      if (!res.headersSent) res.status(500).send('Download error');
+    });
+    req.on('close', () => { try { ffmpeg.kill(); } catch (_) {} });
+
+  } catch (error) {
+    console.error('Download error:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
   }
-  
-  const ytdlp = spawn('yt-dlp', args);
-  res.setHeader('Content-Disposition', `attachment; filename="download_${videoId}.${ext}"`);
-  ytdlp.stdout.pipe(res);
-  req.on('close', () => ytdlp.kill());
 });
 
 app.get('*', (req, res) => {

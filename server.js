@@ -8,8 +8,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-// Render uses 10000; ensure this is set correctly
-const PORT = process.env.PORT || 3000;
+// FIX: Render uses 10000 by default; changed from 3000 to prevent 502 Bad Gateway
+const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -95,7 +95,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
     const videoUrl = urls[0];
     const audioUrl = urls[1] || null;
 
-    const ffmpegArgs = [];
+    const ffmpegArgs = ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5'];
 
     if (audioOnly === 'true') {
       ffmpegArgs.push('-i', videoUrl, '-c:a', 'aac', '-b:a', '192k', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1');
@@ -167,17 +167,15 @@ app.get('/api/download/:videoId', async (req, res) => {
 
     res.setHeader('Content-Disposition', `attachment; filename="download_${videoId}.${ext}"`);
 
-    let ffmpegArgs;
+    let ffmpegArgs = ['-i', videoUrl];
     if (isAudio) {
       const codecMap = { mp3: 'libmp3lame', flac: 'flac', opus: 'libopus', ogg: 'libvorbis' };
       const ffFormat = { mp3: 'mp3', flac: 'flac', opus: 'opus', ogg: 'ogg' };
-      ffmpegArgs = ['-i', videoUrl, '-vn', '-c:a', codecMap[format] || 'libmp3lame', '-q:a', '0', '-f', ffFormat[format] || 'mp3', 'pipe:1'];
+      ffmpegArgs.push('-vn', '-c:a', codecMap[format] || 'libmp3lame', '-q:a', '0', '-f', ffFormat[format] || 'mp3', 'pipe:1');
       res.setHeader('Content-Type', `audio/${format}`);
-    } else if (audioUrl) {
-      ffmpegArgs = ['-i', videoUrl, '-i', audioUrl, '-c:v', 'copy', '-c:a', 'aac', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'];
-      res.setHeader('Content-Type', 'video/mp4');
     } else {
-      ffmpegArgs = ['-i', videoUrl, '-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'];
+      if (audioUrl) ffmpegArgs.push('-i', audioUrl);
+      ffmpegArgs.push('-c:v', 'copy', '-c:a', 'aac', '-f', 'mp4', 'pipe:1');
       res.setHeader('Content-Type', 'video/mp4');
     }
 
@@ -210,5 +208,8 @@ wss.on('connection', (ws) => {
   ws.on('message', (message) => {
     // Restored your manual progress message logic
     ws.send(JSON.stringify({ progress: 100 }));
+    console.log('Progress signaled to client');
   });
 });
+
+console.log("Server fully staged and ready for traffic");

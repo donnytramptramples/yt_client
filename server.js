@@ -1,5 +1,5 @@
 import express from 'express';
-import { Innertube, UniversalCache } from 'youtubei.js'; // Added UniversalCache
+import { Innertube, UniversalCache } from 'youtubei.js';
 import { spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
@@ -8,7 +8,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = process.env.PORT || 3000;
+// FIX: Render uses 10000 by default
+const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -18,10 +19,11 @@ let youtube;
 
 async function initYouTube() {
   try {
-    // FIX: Using cache and local session generation helps avoid blocks
+    // FIX: retrieve_player: true is REQUIRED to fix "Failed to extract signature"
     youtube = await Innertube.create({
       cache: new UniversalCache(false),
-      generate_session_locally: true
+      generate_session_locally: true,
+      retrieve_player: true 
     });
     console.log("YouTube API Initialised");
   } catch (e) {
@@ -35,7 +37,7 @@ initYouTube();
 app.get('/api/search', async (req, res) => {
   try {
     const { q } = req.query;
-    // FIX: type: 'video' avoids the ThumbnailView/Shorts parser crash [1]
+    // FIX: type: 'video' avoids the ThumbnailView/Shorts parser crash
     const results = await youtube.search(q, { type: 'video' });
     
     const videos = (results.videos || []).map(v => ({
@@ -61,7 +63,8 @@ app.get('/api/stream/:videoId', (req, res) => {
   
   const args = [
     '--no-check-certificate',
-    '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
+    // FIX: ios client is currently the most stable for bypassing signature blocks
+    '--extractor-args', 'youtube:player_client=ios',
     '-f', audioOnly === 'true' ? 'bestaudio' : `bestvideo[height<=${quality}]+bestaudio/best`,
     '-o', '-',
     `https://www.youtube.com/watch?v=${videoId}`
@@ -69,12 +72,17 @@ app.get('/api/stream/:videoId', (req, res) => {
   
   const ytdlp = spawn('yt-dlp', args);
   
-  // Set correct content type for the player
   res.setHeader('Content-Type', audioOnly === 'true' ? 'audio/mpeg' : 'video/mp4');
   
   ytdlp.stdout.pipe(res);
   ytdlp.stderr.on('data', (data) => console.error(`[yt-dlp] ${data.toString()}`));
   
+  // Catch spawn errors (e.g. if yt-dlp is missing)
+  ytdlp.on('error', (err) => {
+    console.error("Failed to start yt-dlp:", err.message);
+    if (!res.headersSent) res.status(500).send("Streaming tool error.");
+  });
+
   req.on('close', () => ytdlp.kill());
 });
 
@@ -88,13 +96,12 @@ app.get('/api/download/:videoId', (req, res) => {
 
   const args = [
     '--no-check-certificate',
-    '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
+    '--extractor-args', 'youtube:player_client=ios',
     '-f', format === 'mp4' ? `bestvideo[height<=${quality}]+bestaudio/best` : 'bestaudio',
     '-o', '-',
     `https://www.youtube.com/watch?v=${videoId}`
   ];
 
-  // FIX: Only add audio extraction if the user didn't ask for MP4
   if (format !== 'mp4') {
     args.push('--extract-audio', '--audio-format', ext, '--audio-quality', '0');
   }

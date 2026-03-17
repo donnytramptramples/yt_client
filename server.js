@@ -1,5 +1,5 @@
 import express from 'express';
-import { Innertube } from 'youtubei.js';
+import { Innertube, UniversalCache } from 'youtubei.js'; // Added UniversalCache
 import { spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
@@ -17,7 +17,16 @@ app.use(express.static(path.join(__dirname, 'dist')));
 let youtube;
 
 async function initYouTube() {
-  youtube = await Innertube.create();
+  try {
+    // FIX: Using cache and local session generation helps avoid blocks
+    youtube = await Innertube.create({
+      cache: new UniversalCache(false),
+      generate_session_locally: true
+    });
+    console.log("YouTube API Initialised");
+  } catch (e) {
+    console.error("Init Error:", e.message);
+  }
 }
 
 initYouTube();
@@ -26,45 +35,45 @@ initYouTube();
 app.get('/api/search', async (req, res) => {
   try {
     const { q } = req.query;
-    const results = await youtube.search(q);
-    const videos = results.videos.map(v => ({
+    // FIX: type: 'video' avoids the ThumbnailView/Shorts parser crash [1]
+    const results = await youtube.search(q, { type: 'video' });
+    
+    const videos = (results.videos || []).map(v => ({
       id: v.id,
-      title: v.title.text,
-      thumbnail: v.thumbnails[0].url,
-      duration: v.duration.text,
-      views: v.view_count.text,
-      channel: v.author.name,
-      channelAvatar: v.author.thumbnails?.[0]?.url
+      title: v.title?.text || "Video",
+      thumbnail: v.thumbnails?.[0]?.url || "",
+      duration: v.duration?.text || "0:00",
+      views: v.view_count?.text || "0",
+      channel: v.author?.name || "Channel",
+      channelAvatar: v.author?.thumbnails?.[0]?.url || ""
     }));
     res.json({ videos });
   } catch (error) {
+    console.error("Search Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Stream endpoint with 403 bypass
+// Stream endpoint
 app.get('/api/stream/:videoId', (req, res) => {
   const { videoId } = req.params;
   const { quality = '720', audioOnly = 'false' } = req.query;
   
-  const userAgents = [
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
-    'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36'
-  ];
-  const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-  
   const args = [
-    '--user-agent', randomUA,
+    '--no-check-certificate',
     '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
-    '-f', audioOnly === 'true' ? 'bestaudio' : `bestvideo[height<=${quality}]+bestaudio`,
+    '-f', audioOnly === 'true' ? 'bestaudio' : `bestvideo[height<=${quality}]+bestaudio/best`,
     '-o', '-',
     `https://www.youtube.com/watch?v=${videoId}`
   ];
   
   const ytdlp = spawn('yt-dlp', args);
   
+  // Set correct content type for the player
+  res.setHeader('Content-Type', audioOnly === 'true' ? 'audio/mpeg' : 'video/mp4');
+  
   ytdlp.stdout.pipe(res);
-  ytdlp.stderr.on('data', (data) => console.error(data.toString()));
+  ytdlp.stderr.on('data', (data) => console.error(`[yt-dlp] ${data.toString()}`));
   
   req.on('close', () => ytdlp.kill());
 });
@@ -74,35 +83,30 @@ app.get('/api/download/:videoId', (req, res) => {
   const { videoId } = req.params;
   const { format = 'mp4', quality = '720' } = req.query;
   
-  const formatMap = {
-    mp4: 'mp4',
-    mp3: 'mp3',
-    flac: 'flac',
-    opus: 'opus',
-    ogg: 'ogg'
-  };
-  
+  const formatMap = { mp4: 'mp4', mp3: 'mp3', flac: 'flac', opus: 'opus', ogg: 'ogg' };
+  const ext = formatMap[format] || 'mp3';
+
   const args = [
-    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
+    '--no-check-certificate',
     '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
-    '-f', format === 'mp4' ? `bestvideo[height<=${quality}]+bestaudio` : 'bestaudio',
-    '--extract-audio',
-    '--audio-format', formatMap[format] || 'mp3',
-    '--audio-quality', '320K',
+    '-f', format === 'mp4' ? `bestvideo[height<=${quality}]+bestaudio/best` : 'bestaudio',
     '-o', '-',
     `https://www.youtube.com/watch?v=${videoId}`
   ];
+
+  // FIX: Only add audio extraction if the user didn't ask for MP4
+  if (format !== 'mp4') {
+    args.push('--extract-audio', '--audio-format', ext, '--audio-quality', '0');
+  }
   
   const ytdlp = spawn('yt-dlp', args);
   
-  res.setHeader('Content-Type', `audio/${format}`);
-  res.setHeader('Content-Disposition', `attachment; filename="video.${format}"`);
-  
+  res.setHeader('Content-Disposition', `attachment; filename="download.${ext}"`);
   ytdlp.stdout.pipe(res);
-  ytdlp.stderr.on('data', (data) => console.error(data.toString()));
+  
+  req.on('close', () => ytdlp.kill());
 });
 
-// Serve React app
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
@@ -112,10 +116,6 @@ const server = app.listen(PORT, () => {
 });
 
 const wss = new WebSocketServer({ server });
-
 wss.on('connection', (ws) => {
   console.log('WebSocket client connected');
-  ws.on('message', (message) => {
-    ws.send(JSON.stringify({ progress: 50 }));
-  });
 });

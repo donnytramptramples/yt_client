@@ -19,15 +19,15 @@ let youtube;
 
 async function initYouTube() {
   try {
-    // FIX: retrieve_player: true is REQUIRED to fix "Failed to extract signature"
+    // FIX: retrieve_player: true + specific location settings help bypass signature errors
     youtube = await Innertube.create({
       cache: new UniversalCache(false),
       generate_session_locally: true,
       retrieve_player: true 
     });
-    console.log("YouTube API Initialised");
+    console.log(">>> [SUCCESS] YouTube API Initialised");
   } catch (e) {
-    console.error("Init Error:", e.message);
+    console.error(">>> [ERROR] Init Failed:", e.message);
   }
 }
 
@@ -63,9 +63,10 @@ app.get('/api/stream/:videoId', (req, res) => {
   
   const args = [
     '--no-check-certificate',
-    // FIX: ios client is currently the most stable for bypassing signature blocks
-    '--extractor-args', 'youtube:player_client=ios',
-    '-f', audioOnly === 'true' ? 'bestaudio' : `bestvideo[height<=${quality}]+bestaudio/best`,
+    // FIX: Using multiple clients to ensure bypass if one is throttled
+    '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
+    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    '-f', audioOnly === 'true' ? 'bestaudio/best' : `bestvideo[height<=${quality}]+bestaudio/best`,
     '-o', '-',
     `https://www.youtube.com/watch?v=${videoId}`
   ];
@@ -75,13 +76,14 @@ app.get('/api/stream/:videoId', (req, res) => {
   res.setHeader('Content-Type', audioOnly === 'true' ? 'audio/mpeg' : 'video/mp4');
   
   ytdlp.stdout.pipe(res);
-  ytdlp.stderr.on('data', (data) => console.error(`[yt-dlp] ${data.toString()}`));
   
-  // Catch spawn errors (e.g. if yt-dlp is missing)
+  // Catch spawn errors
   ytdlp.on('error', (err) => {
     console.error("Failed to start yt-dlp:", err.message);
     if (!res.headersSent) res.status(500).send("Streaming tool error.");
   });
+
+  ytdlp.stderr.on('data', (data) => console.error(`[yt-dlp] ${data.toString()}`));
 
   req.on('close', () => ytdlp.kill());
 });
@@ -96,8 +98,9 @@ app.get('/api/download/:videoId', (req, res) => {
 
   const args = [
     '--no-check-certificate',
-    '--extractor-args', 'youtube:player_client=ios',
-    '-f', format === 'mp4' ? `bestvideo[height<=${quality}]+bestaudio/best` : 'bestaudio',
+    '--extractor-args', 'youtube:player_client=ios,android;player_skip=webpage',
+    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    '-f', format === 'mp4' ? `bestvideo[height<=${quality}]+bestaudio/best` : 'bestaudio/best',
     '-o', '-',
     `https://www.youtube.com/watch?v=${videoId}`
   ];
@@ -108,7 +111,7 @@ app.get('/api/download/:videoId', (req, res) => {
   
   const ytdlp = spawn('yt-dlp', args);
   
-  res.setHeader('Content-Disposition', `attachment; filename="download.${ext}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="download_${videoId}.${ext}"`);
   ytdlp.stdout.pipe(res);
   
   req.on('close', () => ytdlp.kill());
@@ -118,7 +121,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
 
